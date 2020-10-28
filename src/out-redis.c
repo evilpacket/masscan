@@ -163,7 +163,7 @@ redis_out_open(struct Output *out, FILE *fp)
 
     count = recv_line((SOCKET)fd, line, sizeof(line));
     if (count != 7 && memcmp(line, "+PONG\r\n", 7) != 0) {
-        LOG(0, "redis: unexpected response from redis server: %s\n", line);
+        LOG(0, "redis: unexpected response from redis server: %s\n\n", line);
         exit(1);
     }
 }
@@ -179,14 +179,14 @@ redis_out_close(struct Output *out, FILE *fp)
 
     UNUSEDPARM(out);
 
-    count = send((SOCKET)fd, "PING\r\n", 6, 0);
+    count = send((SOCKET)fd, "QUIT\r\n", 6, 0);
     if (count != 6) {
-        LOG(0, "redis: send(ping) failed\n");
+        LOG(0, "redis: send(quit) failed\n");
         exit(1);
     }
 
     count = recv_line((SOCKET)fd, line, sizeof(line));
-    if (count != 7 && memcmp(line, "+PONG\r\n", 7) != 0) {
+    if ((count != 5 && memcmp(line, "+OK\r\n", 5) != 0) && (count != 4 && memcmp(line, ":0\r\n", 4) != 0)){
         LOG(0, "redis: unexpected response from redis server: %s\n", line);
         exit(1);
     }
@@ -216,72 +216,19 @@ redis_out_status(struct Output *out, FILE *fp, time_t timestamp,
         (unsigned char)(ip>> 0));
     port_string_length = sprintf_s(port_string, sizeof(port_string), "%u/%s", port, name_from_ip_proto(ip_proto));
 
-/**3
-$3
-SET
-$5
-mykey
-$7
-myvalue
-*/
-
-    /*
-     * KEY: "host"
-     * VALUE: ip
+    /* 
+     * PUBLISH to a redis pubsub topic, currently hardcoded to MASSCAN
+     * published string is NODE:IP:PORT/PROTOCOL
+     * We could add (unsigned)timestamp, status, reason, ttl if we wanted?
      */
-    sprintf_s(line, sizeof(line),
-            "*3\r\n"
-            "$4\r\nSADD\r\n"
-            "$%d\r\n%s\r\n"
-            "$%d\r\n%s\r\n"
-            ,
-            4, "host",
-            ip_string_length, ip_string
-            );
-
-    count = send((SOCKET)fd, line, (int)strlen(line), 0);
-    if (count != strlen(line)) {
-        LOG(0, "redis: error sending data\n");
-        exit(1);
-    }
-    out->redis.outstanding++;
-
-    /*
-     * KEY: ip
-     * VALUE: port
-     */
-    sprintf_s(line, sizeof(line),
-            "*3\r\n"
-            "$4\r\nSADD\r\n"
-            "$%d\r\n%s\r\n"
-            "$%d\r\n%s\r\n"
-            ,
-            ip_string_length, ip_string,
-            port_string_length, port_string);
-
-    count = send((SOCKET)fd, line, (int)strlen(line), 0);
-    if (count != strlen(line)) {
-        LOG(0, "redis: error sending data\n");
-        exit(1);
-    }
-    out->redis.outstanding++;
-
-
-    /*
-     * KEY: ip:port
-     * VALUE: timestamp:status:reason:ttl
-     */
-    values_length = sprintf_s(values, sizeof(values), "%u:%u:%u:%u",
-        (unsigned)timestamp, status, reason, ttl);
+    values_length = sprintf_s(values, sizeof(values), "%s:%s", ip_string, port_string);    
     line_length = sprintf_s(line, sizeof(line),
             "*3\r\n"
-            "$4\r\nSADD\r\n"
-            "$%d\r\n%s:%s\r\n"
-            "$%d\r\n%s\r\n"
-            ,
-            ip_string_length + 1 + port_string_length,
-            ip_string, port_string,
-            values_length, values
+            "$7\r\nPUBLISH\r\n"
+            "$7\r\nMASSCAN\r\n"
+            "$%d\r\n%s\r\n",
+            values_length, 
+            values
             );
 
     count = send((SOCKET)fd, line, (int)line_length, 0);
@@ -289,10 +236,9 @@ myvalue
         LOG(0, "redis: error sending data\n");
         exit(1);
     }
-    out->redis.outstanding++;
+    out->redis.outstanding++;        
 
     clean_response_queue(out, (SOCKET)fd);
-
 }
 
 /****************************************************************************
